@@ -1,5 +1,10 @@
+# Replay logs (you can download them yourself with get.sh)
+logs/
+archives/
+
 # Object files
 *.o
+*.d
 *.ko
 *.obj
 *.elf
@@ -31,3 +36,6 @@
 # Debug files
 *.dSYM/
 *.su
+
+# Unix files
+*.swp
