@@ -12,17 +12,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 int before_block_exec(CPUState *env, TranslationBlock *tb);
 int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd);
 bool in_module(CPUState *env, TranslationBlock *tb);
+bool seen_code(CPUState *env, TranslationBlock *tb);
+bool isEnclosing(char* filename, target_ulong address);
+void free_file_array(FILE** files);
+FILE** get_enclosing_vad_files(target_ulong address);
 
 bool init_plugin(void *);
 void uninit_plugin(void *);
 
+bool first = true;
 bool done = false;
 bool monitoring = false;
-bool first = true;
 
 // Check if we're inside a DLL/module
 bool in_module(CPUState *env, TranslationBlock *tb) {
@@ -37,7 +43,6 @@ bool in_module(CPUState *env, TranslationBlock *tb) {
       unsigned long long end = ms->module[i].base + ms->module[i].size;
       if(start < pc && pc < end) {
         inside = true;
-        //printf("In Process!\n\tPC: %#010llx\n\t", pc);
         break;
       }
     }
@@ -47,6 +52,104 @@ bool in_module(CPUState *env, TranslationBlock *tb) {
   free_osiproc(current);
 
   return inside;
+}
+
+bool isEnclosing(char* filename, target_ulong address) {
+  // Structure of the filenames are:
+  //  ProcName.Offset.start-end.dmp
+  // So to extract the start and end, first we find the dash
+  int dashIdx = 0;
+  for(; filename[dashIdx] != '-' && filename[dashIdx] != '\0'; dashIdx++) {}
+
+  if(filename[dashIdx] == '\0') {
+    printf("Malformed VAD filename!  %s", filename);
+    return false;
+  }
+
+  // Now, walk backwards to find the previous .
+  int startIdx = dashIdx - 1;
+  for(; filename[startIdx] != '.' && startIdx > 0; startIdx--) {}
+  startIdx++; // Increment to remove the dot
+
+  // and forwards to find the next .
+  int endIdx = dashIdx + 1;
+  for(; filename[endIdx] != '.' && filename[endIdx] != '\0'; endIdx++) {}
+
+
+  // Now, slicing with [startIdx, dashIdx):
+  //  start
+  // and with (dashIdx, endIdx)
+  //  end
+  // (Pay attention to the boundaries there)
+  int startLen = dashIdx - startIdx;
+  int endLen = endIdx - dashIdx - 1;
+  // Copy them to their own buffers and parse them
+  char* startBuff = calloc(startLen, sizeof(char));
+  char* endBuff = calloc(endLen, sizeof(char));
+
+  strncpy(startBuff, filename + startIdx, startLen);
+  strncpy(endBuff, filename + dashIdx + 1, endLen);
+
+  target_ulong startAddr = strtoll(startBuff, NULL, 0);
+  target_ulong endAddr = strtoll(endBuff, NULL, 0);
+
+  free(startBuff);
+  free(endBuff);
+
+  return startAddr < address && address < endAddr;
+}
+
+FILE** get_enclosing_vad_files(target_ulong address) {
+  DIR *dp;
+  struct dirent *ep;
+
+  dp = opendir("./vads/");
+  if(dp == NULL) {
+    printf("VADS directory not found!");
+    return NULL;
+  }
+  int fileCount = 0;
+  while((ep = readdir(dp))) {
+    printf("Checking %s\n", ep->d_name);
+    if(ep->d_type == DT_REG) {
+      printf("\tchecking %s for enclosure\n", ep->d_name);
+      if(isEnclosing(ep->d_name, address)) {
+        printf("\t%s encloses %#010llx\n", ep->d_name, (unsigned long long) address);
+        fileCount++;
+      }
+    }
+  }
+
+  FILE** files = calloc(fileCount + 1, sizeof(FILE*));
+
+  return files;
+}
+
+void free_file_array(FILE** files) {
+  printf("\tfreeing file array\n");
+  int idx;
+  for(idx = 0; files[idx] != NULL; idx++) {
+    fclose(files[idx]);
+  }
+  free(files);
+}
+
+// Check if we're inside code we've seen before
+bool seen_code(CPUState *env, TranslationBlock *tb) {
+  // Grab the memory for this basic block
+  //target_ulong bbStart = tb->pc;
+  //target_ulong bbSize  = tb->size;
+  //unsigned char *buf = calloc(bbSize, sizeof(char));
+  // Copy the instructions from this bb to a buffer
+  //cpu_memory_rw_debug(env, bbStart, buf, bbSize, 0);
+
+  printf("\tgetting enclosing vad files\n");
+  // Find the files that contain this range
+  FILE** files = get_enclosing_vad_files(tb->pc);
+
+  free_file_array(files);
+  //free(buf);
+  return false;
 }
 
 int before_block_exec(CPUState *env, TranslationBlock *tb) {
@@ -59,12 +162,14 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
   if(in_module(env, tb)) {
     return 0;
   }
+  if(seen_code(env, tb)) {
+  }
 
   printf("\tPC: %#010llx\n", (unsigned long long)tb->pc);
   printf("Dumping memory and aborting replay.\n");
   panda_memsavep(fopen("dump.raw", "wb"));
-  //done = true;
-  //rr_end_replay_requested = 1;
+  done = true;
+  rr_end_replay_requested = 1;
 
   return 0;
 }
@@ -80,7 +185,7 @@ int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd) {
   if(strcmp(procName, "b022e7cc") == 0) {
     if(first) {
       first = false;
-      printf(" Process found!\n\tPID: %d\n", current->pid);
+      printf(" Process found!\n\tPID: %llu\n", (unsigned long long)current->pid);
     }
     if(!monitoring) {
       // We're now on the correct process, so register a callback to listen to each block
