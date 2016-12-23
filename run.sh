@@ -10,13 +10,20 @@ trap 'exit 130' INT
 mkdir -p dumps
 mkdir -p vads
 
-for round in {0..5}
-do
+round=0
+
+while true; do
 
   echo "Running replay with unpack on $1 for round $round"
   ~/panda/qemu/x86_64-softmmu/qemu-system-x86_64 -replay logs/rr/$1 -m 1G -panda 'osi;unpack:round='"$round" -os windows-32-7
+  # If no dump file was created, the replay has finished!
+  if [ ! -f "./dumps/dump.raw.$round" ]
+  then
+    echo "Replay completed! No memory dump created!"
+    break
+  fi
 
-  echo "Extracting VAD blocks for PID $2 round $round"
+  echo "Dump found, Extracting VAD blocks for PID $2 round $round"
   mkdir -p vad_temps
   volatility vaddump -f ./dumps/dump.raw.$round --profile=Win7SP0x86 -D vad_temps -p $2
 
@@ -40,6 +47,7 @@ do
   done
   cd ..
   rm -rf vad_temps/*
+  round=$round+1
 done
 
 rm -rf vad_temps
