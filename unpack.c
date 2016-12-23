@@ -15,13 +15,21 @@
 #include <sys/types.h>
 #include <dirent.h>
 
+typedef struct {
+  target_ulong start;
+  target_ulong end;
+  char* filename;
+  FILE* file;
+} vad_descriptor;
+
 int before_block_exec(CPUState *env, TranslationBlock *tb);
 int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd);
 bool in_module(CPUState *env, TranslationBlock *tb);
 bool seen_code(CPUState *env, TranslationBlock *tb);
-bool isEnclosing(char* filename, target_ulong address);
-void free_file_array(FILE** files);
-FILE** get_enclosing_vad_files(target_ulong address);
+vad_descriptor open_vad(char* filename);
+void free_vad_descriptor_array(vad_descriptor* vads);
+vad_descriptor* get_enclosing_vad_files(target_ulong address);
+
 
 bool init_plugin(void *);
 void uninit_plugin(void *);
@@ -54,16 +62,17 @@ bool in_module(CPUState *env, TranslationBlock *tb) {
   return inside;
 }
 
-bool isEnclosing(char* filename, target_ulong address) {
+vad_descriptor open_vad(char* filename) {
   // Structure of the filenames are:
   //  ProcName.Offset.start-end.dmp
   // So to extract the start and end, first we find the dash
+  vad_descriptor vd;
   int dashIdx = 0;
   for(; filename[dashIdx] != '-' && filename[dashIdx] != '\0'; dashIdx++) {}
 
   if(filename[dashIdx] == '\0') {
     printf("Malformed VAD filename!  %s", filename);
-    return false;
+    return vd;
   }
 
   // Now, walk backwards to find the previous .
@@ -84,8 +93,7 @@ bool isEnclosing(char* filename, target_ulong address) {
   int startLen = dashIdx - startIdx;
   int endLen = endIdx - dashIdx - 1;
   // Copy them to their own buffers and parse them
-  char* startBuff = calloc(startLen, sizeof(char));
-  char* endBuff = calloc(endLen, sizeof(char));
+  char* startBuff = calloc(startLen, sizeof(char)); char* endBuff = calloc(endLen, sizeof(char));
 
   strncpy(startBuff, filename + startIdx, startLen);
   strncpy(endBuff, filename + dashIdx + 1, endLen);
@@ -96,10 +104,13 @@ bool isEnclosing(char* filename, target_ulong address) {
   free(startBuff);
   free(endBuff);
 
-  return startAddr < address && address < endAddr;
+  vd.start = startAddr;
+  vd.end = endAddr;
+  vd.filename = filename;
+  return vd;
 }
 
-FILE** get_enclosing_vad_files(target_ulong address) {
+vad_descriptor* get_enclosing_vad_files(target_ulong address) {
   DIR *dp;
   struct dirent *ep;
 
@@ -110,45 +121,68 @@ FILE** get_enclosing_vad_files(target_ulong address) {
   }
   int fileCount = 0;
   while((ep = readdir(dp))) {
-    printf("Checking %s\n", ep->d_name);
     if(ep->d_type == DT_REG) {
-      printf("\tchecking %s for enclosure\n", ep->d_name);
-      if(isEnclosing(ep->d_name, address)) {
-        printf("\t%s encloses %#010llx\n", ep->d_name, (unsigned long long) address);
+      vad_descriptor vd = open_vad(ep->d_name);
+      if( vd.start < address && address < vd.end ) {
         fileCount++;
       }
     }
   }
 
-  FILE** files = calloc(fileCount + 1, sizeof(FILE*));
+  vad_descriptor* enclosing_vads = calloc(fileCount + 1, sizeof(vad_descriptor));
 
-  return files;
+  rewinddir(dp);
+  int idx = 0;
+  while((ep = readdir(dp))) {
+    if(ep->d_type == DT_REG) {
+      vad_descriptor vd = open_vad(ep->d_name);
+      if( vd.start < address && address < vd.end ) {
+        enclosing_vads[idx] = vd;
+        char path[100] = "./vads/"; // should be plenty...
+        strcat(path + 7, vd.filename);
+        printf("fopening %s\n", path);
+        enclosing_vads[idx].file = fopen(path, "rb");
+        printf("file %p\n", enclosing_vads[idx].file);
+        idx++;
+      }
+    }
+  }
+
+  return enclosing_vads;
 }
 
-void free_file_array(FILE** files) {
-  printf("\tfreeing file array\n");
+void free_vad_descriptor_array(vad_descriptor* vads) {
   int idx;
-  for(idx = 0; files[idx] != NULL; idx++) {
-    fclose(files[idx]);
+  for(idx = 0; vads[idx].filename != NULL; idx++) {
+    fclose(vads[idx].file);
   }
-  free(files);
+  free(vads);
 }
 
 // Check if we're inside code we've seen before
 bool seen_code(CPUState *env, TranslationBlock *tb) {
   // Grab the memory for this basic block
-  //target_ulong bbStart = tb->pc;
-  //target_ulong bbSize  = tb->size;
-  //unsigned char *buf = calloc(bbSize, sizeof(char));
+  target_ulong bbStart = tb->pc;
+  target_ulong bbSize  = tb->size;
+  unsigned char *buf = calloc(bbSize + 1, sizeof(char));
   // Copy the instructions from this bb to a buffer
-  //cpu_memory_rw_debug(env, bbStart, buf, bbSize, 0);
+  //printf("Start: %#010llx Size: %#010llx", (unsigned long long) bbStart, (unsigned long long) bbSize);
+  cpu_memory_rw_debug(env, bbStart, buf, bbSize, 0);
 
-  printf("\tgetting enclosing vad files\n");
   // Find the files that contain this range
-  FILE** files = get_enclosing_vad_files(tb->pc);
+  vad_descriptor* vads = get_enclosing_vad_files(tb->pc);
 
-  free_file_array(files);
-  //free(buf);
+  int idx;
+  for(idx = 0; vads[idx].filename != NULL; idx++) {
+    printf("Enclosing VAD: Start %#010llx   End %#010llx   Filename %s   File %p\n", \
+        (unsigned long long) vads[idx].start, \
+        (unsigned long long) vads[idx].end, \
+        vads[idx].filename, \
+        vads[idx].file);
+  }
+
+  free_vad_descriptor_array(vads);
+
   return false;
 }
 
