@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <assert.h>
 
 typedef struct {
   target_ulong start;
@@ -34,6 +35,7 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address);
 bool init_plugin(void *);
 void uninit_plugin(void *);
 
+int replay_round = 0;
 bool first = true;
 bool done = false;
 bool monitoring = false;
@@ -129,6 +131,10 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
     }
   }
 
+  if(fileCount == 0) {
+    return NULL;
+  }
+
   vad_descriptor* enclosing_vads = calloc(fileCount + 1, sizeof(vad_descriptor));
 
   rewinddir(dp);
@@ -140,9 +146,7 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
         enclosing_vads[idx] = vd;
         char path[100] = "./vads/"; // should be plenty...
         strcat(path + 7, vd.filename);
-        printf("fopening %s\n", path);
         enclosing_vads[idx].file = fopen(path, "rb");
-        printf("file %p\n", enclosing_vads[idx].file);
         idx++;
       }
     }
@@ -162,28 +166,54 @@ void free_vad_descriptor_array(vad_descriptor* vads) {
 // Check if we're inside code we've seen before
 bool seen_code(CPUState *env, TranslationBlock *tb) {
   // Grab the memory for this basic block
-  target_ulong bbStart = tb->pc;
-  target_ulong bbSize  = tb->size;
-  unsigned char *buf = calloc(bbSize + 1, sizeof(char));
-  // Copy the instructions from this bb to a buffer
-  //printf("Start: %#010llx Size: %#010llx", (unsigned long long) bbStart, (unsigned long long) bbSize);
-  cpu_memory_rw_debug(env, bbStart, buf, bbSize, 0);
+  bool seen = false;
 
   // Find the files that contain this range
   vad_descriptor* vads = get_enclosing_vad_files(tb->pc);
 
+  if(vads == NULL) {
+    return false;
+  }
+
+  target_ulong bbStart = tb->pc;
+  target_ulong bbSize  = tb->size;
+  unsigned char *bbBuff = calloc(bbSize + 1, sizeof(char));
+  unsigned char *fileBuff = calloc(bbSize + 1, sizeof(char));
+  // Copy the instructions from this bb to a buffer
+  //printf("Start: %#010llx Size: %#010llx", (unsigned long long) bbStart, (unsigned long long) bbSize);
+  cpu_memory_rw_debug(env, bbStart, bbBuff, bbSize, 0);
+
+  // For each of the files enclosing the program counter,
   int idx;
   for(idx = 0; vads[idx].filename != NULL; idx++) {
-    printf("Enclosing VAD: Start %#010llx   End %#010llx   Filename %s   File %p\n", \
-        (unsigned long long) vads[idx].start, \
-        (unsigned long long) vads[idx].end, \
-        vads[idx].filename, \
-        vads[idx].file);
+    assert(bbStart + bbSize < vads[idx].end);
+    // Seek to the offset of the program counter
+    FILE* vad_file = vads[idx].file;
+    target_ulong offset = bbStart - vads[idx].start;
+    fseek(vad_file, offset, SEEK_SET);
+    int bytesRead = fread(fileBuff, bbSize, 1, vad_file);
+    assert(bytesRead == 1);
+
+    // and compare the bytes for bbSize
+    int byteCounter;
+    bool identical = true;
+    for(byteCounter = 0; byteCounter < bbSize; byteCounter++) {
+      if(fileBuff[byteCounter] != bbBuff[byteCounter]) {
+        identical = false;
+        break;
+      }
+    }
+    // If we compared the whole loop, and the byte arrays were identical
+    if(identical) {
+      // We've seen this code before, so stop looking at the other VADs
+      seen = true;
+      break;
+    }
   }
 
   free_vad_descriptor_array(vads);
 
-  return false;
+  return seen;
 }
 
 int before_block_exec(CPUState *env, TranslationBlock *tb) {
@@ -197,11 +227,14 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
     return 0;
   }
   if(seen_code(env, tb)) {
+    return 0;
   }
 
-  printf("\tPC: %#010llx\n", (unsigned long long)tb->pc);
-  printf("Dumping memory and aborting replay.\n");
-  panda_memsavep(fopen("dump.raw", "wb"));
+  printf("\tNew code found at PC: %#010llx!!\n", (unsigned long long)tb->pc);
+  char out_file[100];
+  sprintf(out_file, "./dumps/dump.raw.%d", replay_round);
+  printf("Dumping memory to %s and aborting replay.\n", out_file);
+  panda_memsavep(fopen(out_file, "wb"));
   done = true;
   rr_end_replay_requested = 1;
 
@@ -239,6 +272,9 @@ int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd) {
 bool init_plugin(void *self) {
 // Don't bother if we're not on x86
 #ifdef TARGET_I386
+  panda_arg_list *args = panda_get_args("unpack");
+  replay_round = panda_parse_uint32(args, "round", 0);
+
   panda_cb pcb;
 
   pcb.before_block_exec = before_block_exec;

@@ -2,10 +2,11 @@
 # (you can download them yourself with setup.sh / get.sh)
 logs/
 archives/
+dumps/
 
 # Working files (generated from running the plugin)
-dump.raw
 vads/
+vad_temps/
 
 # Object files
 *.o
