@@ -95,7 +95,8 @@ vad_descriptor open_vad(char* filename) {
   int startLen = dashIdx - startIdx;
   int endLen = endIdx - dashIdx - 1;
   // Copy them to their own buffers and parse them
-  char* startBuff = calloc(startLen, sizeof(char)); char* endBuff = calloc(endLen, sizeof(char));
+  char* startBuff = calloc(startLen, sizeof(char));
+  char* endBuff = calloc(endLen, sizeof(char));
 
   strncpy(startBuff, filename + startIdx, startLen);
   strncpy(endBuff, filename + dashIdx + 1, endLen);
@@ -132,6 +133,7 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
   }
 
   if(fileCount == 0) {
+    closedir(dp);
     return NULL;
   }
 
@@ -151,6 +153,8 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
       }
     }
   }
+
+  closedir(dp);
 
   return enclosing_vads;
 }
@@ -213,11 +217,15 @@ bool seen_code(CPUState *env, TranslationBlock *tb) {
   }
 
   free_vad_descriptor_array(vads);
+  free(bbBuff);
+  free(fileBuff);
 
   return seen;
 }
 
 int before_block_exec(CPUState *env, TranslationBlock *tb) {
+  target_ulong instrIdx = rr_get_guest_instr_count();
+  //if(instrIdx < 1517345636) return 0; // testing
   if(!monitoring || done) return 0;
 
   // Ignore this BB if we're in the kernel or a DLL/Module
@@ -235,13 +243,14 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
   char out_file[100];
   sprintf(out_file, "./dumps/dump.raw.%d", replay_round);
   printf("Dumping memory to %s and aborting replay.\n", out_file);
-  panda_memsavep(fopen(out_file, "wb"));
+  FILE* outFile = fopen(out_file, "wb");
+  panda_memsavep(outFile);
+  fclose(outFile);
   done = true;
   rr_end_replay_requested = 1;
 
   // Print out a bit of our story
   FILE* story = fopen("story.txt", "a");
-  target_ulong instrIdx = rr_get_guest_instr_count();
   fprintf(story, \
       "Ran until instruction %llu, executing basic block at %#010llx, which is not kernel, library, or previously seen code.\n", \
       (unsigned long long) instrIdx, \
