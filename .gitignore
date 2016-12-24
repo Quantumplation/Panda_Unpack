@@ -3,10 +3,9 @@
 logs/
 archives/
 dumps/
-
-# Working files (generated from running the plugin)
 vads/
 vad_temps/
+story.txt
 
 # Object files
 *.o

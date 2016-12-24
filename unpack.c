@@ -238,6 +238,15 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
   done = true;
   rr_end_replay_requested = 1;
 
+  // Print out a bit of our story
+  FILE* story = fopen("story.txt", "a");
+  target_ulong instrIdx = rr_get_guest_instr_count();
+  fprintf(story, \
+      "Ran until instruction %llu, executing basic block at %#010llx, which is not kernel, library, or previously seen code.\n", \
+      (unsigned long long) instrIdx, \
+      (unsigned long long) tb->pc);
+  fclose(story);
+
   return 0;
 }
 
