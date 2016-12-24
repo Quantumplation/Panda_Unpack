@@ -251,9 +251,11 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
 
   // Print out a bit of our story
   FILE* story = fopen("story.txt", "a");
+  float percentage = rr_get_percentage();
   fprintf(story, \
-      "Ran until instruction %llu, executing basic block at %#010llx, which is not kernel, library, or previously seen code.\n", \
+      "Ran until instruction %llu (%.2f%% through the replay), executing basic block at %#010llx, which is not kernel, library, or previously seen code.\n", \
       (unsigned long long) instrIdx, \
+      percentage, \
       (unsigned long long) tb->pc);
   fclose(story);
 
