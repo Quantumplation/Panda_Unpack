@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-echo "Cleaning last run"
-rm -rf dumps
-rm -rf vads
-rm -rf vad_temps
-rm story.txt
+round=${3:-0}
+if (( round == 0 ))
+then
+  echo "Starting at round 0, and cleaning up from last run"
+  rm -rf dumps
+  rm -rf vads
+  rm -rf vad_temps
+  rm story.txt
+else
+  echo "Resuming at round $round"
+fi
 
 # Exit if ctrl+c
 trap 'exit 130' INT
@@ -12,7 +18,7 @@ trap 'exit 130' INT
 mkdir -p dumps
 mkdir -p vads
 
-round=0
+round=${3:-0}
 
 while true; do
 
