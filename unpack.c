@@ -123,7 +123,7 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
   }
   int fileCount = 0;
   while((ep = readdir(dp))) {
-    if(ep->d_type == DT_REG) {
+    if(ep->d_name[0] != '.') { // d_type is always 0 for some reason, so just skip dot files / directories
       vad_descriptor vd = open_vad(ep->d_name);
       if( vd.start < address && address < vd.end ) {
         fileCount++;
@@ -140,7 +140,7 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
   rewinddir(dp);
   int idx = 0;
   while((ep = readdir(dp))) {
-    if(ep->d_type == DT_REG) {
+    if(ep->d_name[0] != '.') {
       vad_descriptor vd = open_vad(ep->d_name);
       if( vd.start < address && address < vd.end ) {
         enclosing_vads[idx] = vd;
@@ -172,6 +172,7 @@ bool seen_code(CPUState *env, TranslationBlock *tb) {
   vad_descriptor* vads = get_enclosing_vad_files(tb->pc);
 
   if(vads == NULL) {
+    printf("No enclosing VAD files!\n");
     return false;
   }
 

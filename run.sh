@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 echo "Cleaning last run"
 rm -rf dumps
 rm -rf vads
@@ -28,12 +29,14 @@ while true; do
 
   echo "Dump found, Extracting VAD blocks for PID $2 round $round"
   mkdir -p vad_temps
-  volatility vaddump -f ./dumps/dump.raw.$round --profile=Win7SP0x86 -D vad_temps -p $2
+  python ~/volatility/vol.py vaddump -f ./dumps/dump.raw.$round --profile=Win7SP0x86 -D vad_temps -p $2
 
   echo "Checking VAD blocks:" >> story.txt
 
   cd ./vad_temps
-  for f in *.dmp; do
+  for f in *.dmp
+  do
+    echo "Checking $f"
     copy=true
     glob="../vads/${f}.*"
     for prev_file in $glob
