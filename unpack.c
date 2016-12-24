@@ -25,6 +25,7 @@ typedef struct {
 
 int before_block_exec(CPUState *env, TranslationBlock *tb);
 int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd);
+void on_process_exit(CPUState *env, OsiProc *proc);
 bool in_module(CPUState *env, TranslationBlock *tb);
 bool seen_code(CPUState *env, TranslationBlock *tb);
 vad_descriptor open_vad(char* filename);
@@ -35,10 +36,35 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address);
 bool init_plugin(void *);
 void uninit_plugin(void *);
 
+char* process_name;
 int replay_round = 0;
+int pid = 0;
 bool first = true;
 bool done = false;
 bool monitoring = false;
+
+// Once the suspicious process exits, we should take a memory dump and stop listening
+void on_process_exit(CPUState *env, OsiProc *proc) {
+  if(pid == 0) return; // We haven't gotten to our process yet 
+  if(proc->pid != pid) return; // We don't care about anyone else
+
+  // The malicious process is exiting, so take a memory dump and terminate the replay
+  done = true;
+  rr_end_replay_requested = 1;
+  char out_file[100];
+  sprintf(out_file, "./%s/dumps/dump.raw.%d", process_name, replay_round);
+  printf("Dumping memory to %s one final time as the process exits and finishing replay.\n", out_file);
+  FILE* outFile = fopen(out_file, "wb");
+  panda_memsavep(outFile);
+  fclose(outFile);
+
+  // Print out a finished line!
+  char story_fileName[100];
+  sprintf(story_fileName, "./%s/story.txt", process_name);
+  FILE* story = fopen(story_fileName, "a");
+  fprintf(story, "Replay finished!\n");
+  fclose(story);
+}
 
 // Check if we're inside a DLL/module
 bool in_module(CPUState *env, TranslationBlock *tb) {
@@ -117,7 +143,9 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
   DIR *dp;
   struct dirent *ep;
 
-  dp = opendir("./vads/");
+  char dirPath[100];
+  sprintf(dirPath, "./%s/vads/", process_name);
+  dp = opendir(dirPath);
   if(dp == NULL) {
     printf("VADS directory not found!");
     return NULL;
@@ -146,8 +174,8 @@ vad_descriptor* get_enclosing_vad_files(target_ulong address) {
       vad_descriptor vd = open_vad(ep->d_name);
       if( vd.start < address && address < vd.end ) {
         enclosing_vads[idx] = vd;
-        char path[100] = "./vads/"; // should be plenty...
-        strcat(path + 7, vd.filename);
+        char path[100]; // should be plenty...
+        sprintf(path, "./%s/vads/%s", process_name, vd.filename);
         enclosing_vads[idx].file = fopen(path, "rb");
         idx++;
       }
@@ -241,7 +269,7 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
 
   printf("\tNew code found at PC: %#010llx!!\n", (unsigned long long)tb->pc);
   char out_file[100];
-  sprintf(out_file, "./dumps/dump.raw.%d", replay_round);
+  sprintf(out_file, "./%s/dumps/dump.raw.%d", process_name, replay_round);
   printf("Dumping memory to %s and aborting replay.\n", out_file);
   FILE* outFile = fopen(out_file, "wb");
   panda_memsavep(outFile);
@@ -250,7 +278,9 @@ int before_block_exec(CPUState *env, TranslationBlock *tb) {
   rr_end_replay_requested = 1;
 
   // Print out a bit of our story
-  FILE* story = fopen("story.txt", "a");
+  char story_fileName[100];
+  sprintf(story_fileName, "./%s/story.txt", process_name);
+  FILE* story = fopen(story_fileName, "a");
   float percentage = rr_get_percentage();
   fprintf(story, \
       "Ran until instruction %llu (%.2f%% through the replay), executing basic block at %#010llx, which is not kernel, library, or previously seen code.\n", \
@@ -267,12 +297,10 @@ int vmi_pgd_changed(CPUState *env, target_ulong old_pgd, target_ulong new_pgd) {
 
   OsiProc *current = get_current_process(env);
 
-  char procName[9] = {0};
-  strncpy(procName, current->name, 8);
-
-  if(strcmp(procName, "b022e7cc") == 0) {
+  if(strcmp(current->name, process_name) == 0) {
     if(first) {
       first = false;
+      pid = current->pid;
       printf(" Process found!\n\tPID: %llu\n", (unsigned long long)current->pid);
     }
     if(!monitoring) {
@@ -295,6 +323,7 @@ bool init_plugin(void *self) {
 #ifdef TARGET_I386
   panda_arg_list *args = panda_get_args("unpack");
   replay_round = panda_parse_uint32(args, "round", 0);
+  process_name = panda_parse_string(args, "process", "cmd.exe");
 
   panda_cb pcb;
 
@@ -318,6 +347,21 @@ bool init_plugin(void *self) {
 }
 
 void uninit_plugin(void *self) {
+  if(!done) {
+    char out_fileName[100];
+    sprintf(out_fileName, "./%s/dumps/dump.raw.%d", process_name, replay_round);
+    printf("Dumping memory to %s one final time and finishing replay.\n", out_fileName);
+    FILE* outFile = fopen(out_fileName, "wb");
+    panda_memsavep(outFile);
+    fclose(outFile);
+
+    // Print out a finished line!
+    char story_fileName[100];
+    sprintf(story_fileName, "./%s/story.txt", process_name);
+    FILE* story = fopen(story_fileName, "a");
+    fprintf(story, "Replay finished!\n");
+    fclose(story);
+  }
   printf("\n\n");
     //fclose(plugin_log);
 }

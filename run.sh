@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-round=${3:-0}
+round=${4:-0}
 if (( round == 0 ))
 then
   echo "Starting at round 0, and cleaning up from last run"
-  rm -rf dumps
-  rm -rf vads
-  rm -rf vad_temps
-  rm story.txt
+  rm -rf "./${2}/dumps"
+  rm -rf "./${2}/vads"
+  rm -rf "./${2}/vad_temps"
+  rm "./${2}/story.txt"
 else
   echo "Resuming at round $round"
 fi
@@ -15,34 +15,24 @@ fi
 trap 'exit 130' INT
 
 # Necessary folders
-mkdir -p dumps
-mkdir -p vads
-
-round=${3:-0}
+mkdir -p "./${2}/dumps"
+mkdir -p "./${2}/vads"
 
 while true; do
 
-  echo "Starting round $round..." >> story.txt
+  echo "Starting round $round..." >> "./${2}/story.txt"
   echo "Running replay with unpack on $1 for round $round"
-  ~/panda/qemu/x86_64-softmmu/qemu-system-x86_64 -replay logs/rr/$1 -m 1G -panda 'osi;unpack:round='"$round" -os windows-32-7
-  # If no dump file was created, the replay has finished!
-  if [ ! -f "./dumps/dump.raw.$round" ]
-  then
-    echo "Replay completed! No memory dump created!"
-    echo "Replay completed!" >> story.txt
-    break
-  fi
+  ~/panda/qemu/x86_64-softmmu/qemu-system-x86_64 -replay logs/rr/$1 -m 1G -panda 'osi;unpack:process='"$2"',round='"$round" -os windows-32-7
 
-  echo "Dump found, Extracting VAD blocks for PID $2 round $round"
-  mkdir -p vad_temps
-  python ~/volatility/vol.py vaddump -f ./dumps/dump.raw.$round --profile=Win7SP0x86 -D vad_temps -p $2
+  echo "Extracting VAD blocks for PID $3 round $round"
+  mkdir -p "./${2}/vad_temps"
+  python ~/volatility/vol.py vaddump -f "./${2}/dumps/dump.raw.${round}" --profile=Win7SP0x86 -D "./${2}/vad_temps" -p $3
 
-  echo "Checking VAD blocks:" >> story.txt
+  echo "Checking VAD blocks:" >> "./${2}/story.txt"
 
-  cd ./vad_temps
+  cd "./${2}/vad_temps"
   for f in *.dmp
   do
-    echo "Checking $f"
     copy=true
     glob="../vads/${f}.*"
     for prev_file in $glob
@@ -60,9 +50,16 @@ while true; do
       cp "$f" "../vads/${f}.${round}"
     fi
   done
-  cd ..
-  rm -rf vad_temps/*
+  cd ../..
+  rm -rf "./${2}/vad_temps/*"
   ((round++)) # Bash incrementing...
+  # If the story file contains "Replay Finished!", we can do one more round of extraction
+  if grep "Replay finished!" "./${2}/story.txt"
+  then
+    echo "Replay completed!"
+    break
+  fi
+
 done
 
-rm -rf vad_temps
+rm -rf "./${2}/vad_temps"
